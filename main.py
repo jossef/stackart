@@ -1,45 +1,60 @@
 import os
-import re
 import shutil
 from hashlib import sha1
-
 import dateutil.parser
 import requests
-from bs4 import BeautifulSoup
 
 SCRIPT_DIR = os.path.realpath(os.path.dirname(__file__))
 IMAGES_DIR = os.path.join(SCRIPT_DIR, 'images')
+SO_PRODUCTION_ID = "jo7n4k8s"
 
 
-def get_blog_posts(max_page=75):
-    for page in range(1, max_page):
-        r = requests.get(f'https://stackoverflow.blog/page/{page}/', allow_redirects=True)
+def get_blog_posts(max_page=75, page_size=100):
+    for page in range(0, max_page):
+        query = f'''*[_type == "blogPost" &&
+        !("podcast" in tags[]->slug.current) &&
+        !("newsletter" in tags[]->slug.current) && 
+        !(_id in *[_type == "blogSettings"].sticky[]->_id) &&
+        visible == true 
+        ] | order(publishedAt desc) [{page + page * page_size}...{page_size + page * page_size}] {{
+        _id,
+        title,
+        publishedAt,
+        image
+        }}'''
+
+        r = requests.get(f'https://{SO_PRODUCTION_ID}.api.sanity.io/v2021-10-21/data/query/production', allow_redirects=True, params={"query": query})
         r.raise_for_status()
+        data = r.json()
 
-        soup = BeautifulSoup(r.content, "lxml")
-        article_elements = soup.find_all("article")
-        for article_element in article_elements:
-            image_element = article_element.find('img')
-            if not image_element:
+        items = data['result']
+
+        for item in items:
+            item_image = item.get('image', {})
+            if not item_image:
                 continue
 
-            date_elements = article_element.find('header').find('span')
-            if not date_elements:
+            item_image_asset = item_image.get('asset', {})
+            if not item_image_asset:
                 continue
 
-            image_url = image_element['src']
-            date = date_elements.text.strip()
+            image_url = item_image_asset.get('_ref')
+            if not image_url:
+                continue
+
+            _, image_id, image_size, image_extension = image_url.split('-')
+            image_url = f"https://cdn.stackoverflow.co/images/{SO_PRODUCTION_ID}/production/{image_id}-{image_size}.{image_extension}"
+            date = item['publishedAt']
             date = dateutil.parser.parse(date)
             yield image_url, date
 
-
-def normalize_url(url):
-    url = re.sub(r"(.*)(-\d+x\d+)(.(jpe?g|png))$", r"\1\3", url)
-    return url
+        if len(items) != page_size:
+            break
 
 
 def download_file(url, file_path):
     with requests.get(url, stream=True) as r:
+        r.raise_for_status()
         with open(file_path, 'wb') as f:
             shutil.copyfileobj(r.raw, f)
 
@@ -48,7 +63,6 @@ def main():
     files_exist = 0
     for image_url, date in get_blog_posts():
         date = date.strftime("%Y-%m-%d")
-        image_url = normalize_url(image_url)
         file_name = image_url.split('/')[-1]
         file_extension = file_name.split('.')[-1]
         file_name_sha1 = sha1(file_name.encode()).hexdigest()
@@ -61,8 +75,8 @@ def main():
         if os.path.isfile(output_file_path):
             files_exist += 1
         else:
-            download_file(image_url, output_file_path)
-            print(output_file_path)
+            print(image_url, date)
+            download_file(image_url)
 
         if files_exist > 10:
             break
