@@ -76,7 +76,7 @@ def main():
             files_exist += 1
         else:
             print(image_url, date)
-            download_file(image_url)
+            download_file(image_url, output_file_path)
 
         if files_exist > 10:
             break
